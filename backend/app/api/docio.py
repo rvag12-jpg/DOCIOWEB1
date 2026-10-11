@@ -1,6 +1,7 @@
 from uuid import uuid4
+from typing import Literal
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from app import repository as repo
 router=APIRouter(prefix='/docio',tags=['docio'])
 def load(): return repo.state()
@@ -10,15 +11,10 @@ class StudentIn(BaseModel): student_id:str; group_id:str
 class KnowledgeIn(BaseModel): knowledge_id:str; code:str=''; title:str; course:str=''; subject:str=''
 class CriterionIn(BaseModel): criterion_id:str; code:str=''; title:str; course:str=''; subject:str=''
 class RelationIn(BaseModel): knowledge_id:str; criterion_id:str
-class Question(BaseModel):
- question_id:str; title:str; max_score:float=Field(gt=0); knowledge_ids:list[str]=[]; criteria:list[str]=[]
- @model_validator(mode='after')
- def limits(self):
-  if len(self.criteria)>2: raise ValueError('Máximo 2 criterios por cuestión')
-  return self
-class AssessmentIn(BaseModel): title:str; group_id:str; evaluation:str=''; questions:list[Question]=[]
+class Question(BaseModel): question_id:str; title:str; max_score:float=Field(gt=0); knowledge_ids:list[str]=[]; criteria:list[str]=[]
+class AssessmentIn(BaseModel): title:str; group_id:str; evaluation:str=''; assessment_type:Literal['exam','activity','project']='exam'; questions:list[Question]=[]
 class Evidence(BaseModel): criterion_id:str; text:str; score:float|None=None
-class CorrectionIn(BaseModel): assessment_id:str; student_id:str; scores:dict[str,float]={}; evidence:list[Evidence]=[]; validated:bool=False; comment:str=''
+class CorrectionIn(BaseModel): assessment_id:str; student_id:str; scores:dict[str,float]={}; evidence:list[Evidence]=[]; validated:bool=False; comment:str=''; overwrite:bool=False
 def assessment(db,aid): return next((x for x in db['assessments'] if x['assessment_id']==aid),None)
 def compute(a,c):
  qs=a.get('questions',[]); qmap={q['question_id']:q for q in qs}; total_max=sum(float(q['max_score']) for q in qs); total=0.; crit={}
@@ -57,25 +53,30 @@ def add_relation(item:RelationIn):
  if not any(x['knowledge_id']==item.knowledge_id for x in db['knowledge']): raise HTTPException(404,'Saber no encontrado')
  if not any(x['criterion_id']==item.criterion_id for x in db['criteria']): raise HTTPException(404,'Criterio no encontrado')
  return repo.put('relations',item.model_dump(),'create')
-def validate_question(db,q):
+def validate_question(db,q,max_criteria=2):
  if not q.knowledge_ids: raise HTTPException(422,f'{q.question_id}: debe indicar al menos un saber básico')
+ if not q.criteria: raise HTTPException(422,f'{q.question_id}: debe seleccionar criterios desde la matriz')
+ if len(q.criteria)>max_criteria: raise HTTPException(422,f'{q.question_id}: máximo {max_criteria} criterios')
  allowed={r['criterion_id'] for r in db['relations'] if r['knowledge_id'] in q.knowledge_ids}; invalid=set(q.criteria)-allowed
  if invalid: raise HTTPException(422,f'{q.question_id}: criterios sin relación saber→criterio: {sorted(invalid)}')
- if not q.criteria: raise HTTPException(422,f'{q.question_id}: debe seleccionar 1 o 2 criterios desde la matriz')
 @router.post('/assessments')
 def add_assessment(item:AssessmentIn):
  db=load()
  if not any(x['group_id']==item.group_id for x in db['groups']): raise HTTPException(404,'Grupo no encontrado')
- for q in item.questions: validate_question(db,q)
+ if not item.questions: raise HTTPException(422,'La prueba debe contener al menos una cuestión')
+ maxc=3 if item.assessment_type=='project' else 2
+ for q in item.questions: validate_question(db,q,maxc)
  row={'assessment_id':uid('ASM'),**item.model_dump()}; return repo.put('assessments',row,'create')
 @router.put('/corrections')
 def upsert_correction(item:CorrectionIn):
  db=load(); a=assessment(db,item.assessment_id)
  if not a: raise HTTPException(404,'Prueba no encontrada')
  if not any(x['student_id']==item.student_id for x in db['students']): raise HTTPException(404,'student_id no encontrado')
+ existing=next((x for x in db['corrections'] if x['assessment_id']==item.assessment_id and x['student_id']==item.student_id),None)
+ if existing and existing.get('validated') and not item.overwrite: raise HTTPException(409,'La corrección ya está validada. Confirme overwrite=true para sustituirla')
  invalid=set(item.scores)-{q['question_id'] for q in a.get('questions',[])}
  if invalid: raise HTTPException(422,f'Cuestiones no válidas: {sorted(invalid)}')
- data=item.model_dump(); data.update(compute(a,data)); return repo.put('corrections',data,'correction')
+ data=item.model_dump(exclude={'overwrite'}); data.update(compute(a,data)); return repo.put('corrections',data,'correction')
 @router.delete('/corrections/{assessment_id}/{student_id}')
 def delete_correction(assessment_id:str,student_id:str):
  if not repo.remove('corrections',f'{assessment_id}::{student_id}'): raise HTTPException(404,'Corrección no encontrada')
@@ -102,17 +103,22 @@ def import_correction(payload:dict):
  if payload.get('format') not in (None,'DOCIO_CORRECTION_V1'): raise HTTPException(422,'Formato no compatible')
  db=load(); rows=payload.get('corrections') or payload.get('students') or []
  if not isinstance(rows,list): raise HTTPException(422,'corrections/students debe ser una lista')
- aid0=payload.get('assessment_id'); imported=0
+ aid0=payload.get('assessment_id'); overwrite=bool(payload.get('overwrite',False)); imported=0; skipped=[]
  for raw in rows:
   sid=raw.get('student_id'); aid=raw.get('assessment_id') or aid0
   if not sid or not aid: raise HTTPException(422,'student_id y assessment_id obligatorios')
+  a=assessment(db,aid)
+  if not a: raise HTTPException(404,f'Prueba no encontrada: {aid}')
+  if not any(x['student_id']==sid for x in db['students']): raise HTTPException(404,f'student_id no encontrado: {sid}')
+  existing=next((x for x in db['corrections'] if x['assessment_id']==aid and x['student_id']==sid),None)
+  if existing and existing.get('validated') and not overwrite: skipped.append({'assessment_id':aid,'student_id':sid,'reason':'validated'}); continue
   ev=raw.get('evidence') or raw.get('evidences') or []
   if isinstance(ev,dict): ev=[{'criterion_id':str(k),'text':str(v) if not isinstance(v,dict) else str(v.get('text','')),'score':v.get('score') if isinstance(v,dict) else None} for k,v in ev.items()]
   if not isinstance(ev,list): ev=[]
-  row={'assessment_id':aid,'student_id':sid,'scores':raw.get('scores') or {},'evidence':ev,'validated':bool(raw.get('validated',False)),'comment':raw.get('comment','')}; a=assessment(db,aid)
-  if a: row.update(compute(a,row))
-  repo.put('corrections',row,'import'); imported+=1
- return {'format':'DOCIO_CORRECTION_V1','imported':imported}
+  scores=raw.get('scores') or {}; invalid=set(scores)-{q['question_id'] for q in a.get('questions',[])}
+  if invalid: raise HTTPException(422,f'{sid}: cuestiones no válidas: {sorted(invalid)}')
+  row={'assessment_id':aid,'student_id':sid,'scores':scores,'evidence':ev,'validated':bool(raw.get('validated',False)),'comment':raw.get('comment','')}; row.update(compute(a,row)); repo.put('corrections',row,'import'); imported+=1
+ return {'format':'DOCIO_CORRECTION_V1','imported':imported,'skipped':skipped}
 @router.get('/export/{assessment_id}')
 def export(assessment_id:str):
  db=load(); a=assessment(db,assessment_id)
