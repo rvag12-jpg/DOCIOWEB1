@@ -2,3 +2,5 @@
 
 
 .tracking-note{font-size:13px;color:var(--muted);line-height:1.5}.heat.unobserved{background:#edf2f6;color:#526574;border-color:#ccd7e0}.heat[aria-pressed=true]{outline:3px solid var(--docio);outline-offset:2px}.metadata-editor{padding:16px;margin:18px 0;background:#f5f9fd;border:1px solid var(--line);border-radius:10px}.metadata-editor h4{grid-column:1/-1;margin:0}.success-note{color:#287343;background:#e3f4e9;border-radius:7px;padding:10px}
+
+.demo-banner{padding:12px 16px;border:1px solid #dab25e;border-left:5px solid #b88415;border-radius:8px;background:#fff5d9;color:#715210;font-size:13px;line-height:1.5}.demo-banner strong{display:block;margin-bottom:3px}

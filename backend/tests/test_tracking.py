@@ -1,6 +1,7 @@
 """Regression tests using only synthetic records in an isolated database."""
 import os
 os.environ['DATABASE_URL'] = ''
+os.environ['DOCIO_DEMO_MODE'] = 'false'
 
 import tempfile
 import unittest
@@ -23,7 +24,7 @@ class TrackingTests(unittest.TestCase):
         self.addCleanup(self.patch_legacy.stop)
         self.client = TestClient(app)
         repo.put('groups', {'group_id': 'G1', 'name': 'Grupo sintético'})
-        for sid in ('A001', 'A002', 'A003'):
+        for sid in ('TEST-001', 'TEST-002', 'TEST-003'):
             repo.put('students', {'student_id': sid, 'group_id': 'G1'})
         # Reverse insertion order checks ordering by actual assessment date.
         self.assessment('NEW', '2026-10-20', '1ª', 'C1')
@@ -38,7 +39,7 @@ class TrackingTests(unittest.TestCase):
                            'max_score': 2, 'knowledge_ids': ['K1'], 'criteria': [criterion]}],
         })
 
-    def correction(self, aid, score, student='A001', validated=True):
+    def correction(self, aid, score, student='TEST-001', validated=True):
         response = self.client.put('/api/v1/docio/corrections', json={
             'assessment_id': aid, 'student_id': student,
             'scores': {'Q1': score}, 'validated': validated,
@@ -54,11 +55,11 @@ class TrackingTests(unittest.TestCase):
     def test_no_evidence_is_distinct_from_achieved_and_zero(self):
         self.correction('NEW', 0)
         rows = {s['student_id']: s for s in self.overview()['students']}
-        self.assertEqual(rows['A001']['status'], 'pending')
-        self.assertEqual(rows['A001']['latest_criteria'], {'C1': 0.0})
-        self.assertEqual(rows['A002']['status'], 'no_evidence')
-        self.assertIsNone(rows['A002']['mean'])
-        self.assertEqual(rows['A002']['missing_criteria'], ['C1', 'C2'])
+        self.assertEqual(rows['TEST-001']['status'], 'pending')
+        self.assertEqual(rows['TEST-001']['latest_criteria'], {'C1': 0.0})
+        self.assertEqual(rows['TEST-002']['status'], 'no_evidence')
+        self.assertIsNone(rows['TEST-002']['mean'])
+        self.assertEqual(rows['TEST-002']['missing_criteria'], ['C1', 'C2'])
 
     def test_drafts_do_not_affect_tracking_profile_or_recovery(self):
         self.correction('OLD', .4)
@@ -67,15 +68,15 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(row['latest_criteria'], {'C1': 2.0})
         self.assertEqual(row['drafts'], 1)
         self.assertEqual(row['assessments'], 1)
-        profile = self.client.get('/api/v1/docio/student-profile/A001').json()
+        profile = self.client.get('/api/v1/docio/student-profile/TEST-001').json()
         self.assertEqual([a['assessment_id'] for a in profile['attempts']], ['OLD'])
-        recovery = self.client.get('/api/v1/docio/recovery/G1/A001').json()
+        recovery = self.client.get('/api/v1/docio/recovery/G1/TEST-001').json()
         self.assertEqual(recovery['pending'], ['C1'])
 
     def test_profile_respects_evaluation_filter(self):
         self.correction('OLD', .4)
         self.correction('NEW', 1.6)
-        profile = self.client.get('/api/v1/docio/student-profile/A001', params={'evaluation': '1ª'}).json()
+        profile = self.client.get('/api/v1/docio/student-profile/TEST-001', params={'evaluation': '1ª'}).json()
         self.assertEqual(profile['evaluation'], '1ª')
         self.assertEqual([a['assessment_id'] for a in profile['attempts']], ['NEW'])
         self.assertEqual(profile['mean'], 8.0)
@@ -84,14 +85,14 @@ class TrackingTests(unittest.TestCase):
     def test_latest_criterion_and_group_mean_use_chronology(self):
         self.correction('NEW', 1.6)
         self.correction('OLD', .4)
-        self.correction('NEW', 1.2, student='A002')
+        self.correction('NEW', 1.2, student='TEST-002')
         overview = self.overview()
         self.assertEqual(overview['students'][0]['latest_criteria'], {'C1': 8.0})
         self.assertEqual(overview['criterion_means']['C1'], 7.0)
         self.assertIsNone(overview['criterion_means']['C2'])
-        recovery = self.client.get('/api/v1/docio/recovery/G1/A001').json()
+        recovery = self.client.get('/api/v1/docio/recovery/G1/TEST-001').json()
         self.assertEqual(recovery['recovered'], ['C1'])
-        profile = self.client.get('/api/v1/docio/student-profile/A001').json()
+        profile = self.client.get('/api/v1/docio/student-profile/TEST-001').json()
         self.assertEqual([a['assessment_id'] for a in profile['attempts']], ['OLD', 'NEW'])
 
     def test_partial_evidence_is_not_green(self):
@@ -119,7 +120,7 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(repo.state()['corrections'], before['corrections'])
         self.assertEqual(correction['final_score'], 8.0)
         self.assertEqual(repo.history(1)[0]['action'], 'metadata')
-        profile = self.client.get('/api/v1/docio/student-profile/A001', params={'evaluation': '2ª'}).json()
+        profile = self.client.get('/api/v1/docio/student-profile/TEST-001', params={'evaluation': '2ª'}).json()
         self.assertEqual(profile['attempts'][0]['date'], '2026-11-01')
 
     def test_metadata_date_changes_chronology_without_regrading(self):
@@ -150,7 +151,7 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/v1/docio/group-overview/MISSING').status_code, 404)
         self.assertEqual(self.client.get('/api/v1/docio/group-overview/G1?threshold=11').status_code, 422)
         self.assertEqual(self.client.get('/api/v1/docio/group-overview/G1?evaluation=3').status_code, 422)
-        self.assertEqual(self.client.get('/api/v1/docio/student-profile/A001?evaluation=3').status_code, 422)
+        self.assertEqual(self.client.get('/api/v1/docio/student-profile/TEST-001?evaluation=3').status_code, 422)
 
     def test_storage_summary_returns_counts_without_student_records(self):
         self.correction('NEW', 1)
@@ -159,14 +160,14 @@ class TrackingTests(unittest.TestCase):
         summary = response.json()
         self.assertEqual(summary['record_counts']['students'], 3)
         self.assertEqual(summary['record_counts']['corrections'], 1)
-        self.assertNotIn('A001', response.text)
+        self.assertNotIn('TEST-001', response.text)
         self.assertNotIn('questions', response.text)
 
     def test_scoring_is_consistent_across_views(self):
         correction = self.correction('NEW', 1.26)
         score = correction['final_score']
         tracking = self.client.get('/api/v1/docio/tracking').json()['rows'][0]
-        profile = self.client.get('/api/v1/docio/student-profile/A001').json()['attempts'][0]
+        profile = self.client.get('/api/v1/docio/student-profile/TEST-001').json()['attempts'][0]
         self.assertEqual(score, 6.3)
         self.assertEqual(tracking['final_score'], score)
         self.assertEqual(profile['final_score'], score)

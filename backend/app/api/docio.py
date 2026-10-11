@@ -25,7 +25,7 @@ def assessment(db,aid): return next((x for x in db['assessments'] if x['assessme
 @router.get('/state')
 def state(): return load()
 @router.get('/storage')
-def storage(): return {'backend':repo.backend(),'persistent':repo.backend()=='postgresql','record_counts':repo.counts()}
+def storage(): return {'backend':repo.backend(),'persistent':repo.backend()=='postgresql','record_counts':repo.counts(),'data_mode':'demo' if repo.DEMO_MODE else 'standard'}
 @router.get('/history')
 def history(limit:int=100): return repo.history(max(1,min(limit,500)))
 @router.post('/groups')

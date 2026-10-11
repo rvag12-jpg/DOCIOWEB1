@@ -53,3 +53,13 @@ La imagen Docker sirve el frontend y la API desde un mismo origen y utiliza `POR
 `DATABASE_URL` activa PostgreSQL. Sin ella, el repositorio utiliza SQLite en `DOCIO_DATA_DIR` (`data` por defecto). SQLite dentro del contenedor de Render no garantiza conservación de datos entre despliegues. Los PDF y sus imágenes también necesitan almacenamiento persistente; PostgreSQL conserva los registros de evaluación, no los archivos PDF.
 
 La versión 0.11 añade seguimiento fiable, edición de metadatos y pruebas de regresión. El cambio a PostgreSQL y la migración de los registros existentes deben completarse antes de dar por garantizada la persistencia del servicio.
+
+## Demostración con datos sintéticos (v0.12)
+
+`DOCIO_DEMO_MODE=true` activa un grupo, tres alumnos `DEMO-001`–`DEMO-003`, dos pruebas y cuatro correcciones completamente inventados. Incluye ejemplos de recuperación, criterios pendientes y un borrador sin evidencias validadas. Los saberes y criterios DEMO son ficticios y no forman una matriz curricular oficial.
+
+La demostración utiliza tablas `demo_records` y `demo_audit`, separadas de las tablas ordinarias, y una subcarpeta `demo` para sus archivos. No importa `docio.json` ni copia registros del modo ordinario. La interfaz muestra un aviso permanente de datos ficticios. Las inicializaciones posteriores conservan las ediciones ya realizadas en la demostración.
+
+Las pruebas automáticas utilizan exclusivamente fixtures inventadas. GitHub Actions levanta PostgreSQL 18 para comprobar escrituras, historial y aislamiento en esquemas temporales; no conecta a la base de datos de Render.
+
+La demostración publicada sin `DATABASE_URL` utiliza SQLite y puede reiniciar sus ejemplos al redeploy. El soporte PostgreSQL se valida en CI; conectar la base de datos del servicio principal sigue siendo una configuración independiente.
