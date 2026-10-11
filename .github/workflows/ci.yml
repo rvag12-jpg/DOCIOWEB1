@@ -14,6 +14,10 @@ jobs:
           python-version: '3.12'
       - name: Validate Python syntax
         run: python -m compileall -q backend/app
+      - name: Install backend test dependencies
+        run: pip install -r backend/requirements-dev.txt
+      - name: Test tracking and assessment metadata
+        run: PYTHONPATH=backend python -m unittest discover -s backend/tests -v
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -21,9 +25,10 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install frontend
         working-directory: frontend
-        run: npm install
+        run: npm ci
       - name: Build frontend
         working-directory: frontend
         run: npm run build
       - name: Build Docker image
         run: docker build -f backend/Dockerfile -t docioweb1-ci .
+

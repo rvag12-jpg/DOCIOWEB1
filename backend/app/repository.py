@@ -65,3 +65,11 @@ def history(limit=100):
  with conn() as c:
   cur=c.cursor(); cur.execute(ph('SELECT id,ts,action,collection,record_key,before_data,after_data FROM audit ORDER BY id DESC LIMIT ?'),(limit,)); cols=['id','ts','action','collection','record_key','before_data','after_data']; return [{cols[i]:v for i,v in enumerate(r)} for r in cur.fetchall()]
 def backend(): return 'postgresql' if POSTGRES else 'sqlite'
+
+
+def counts():
+ init_db(); result={name:0 for name in COLLECTIONS}
+ with conn() as c:
+  cur=c.cursor(); cur.execute('SELECT collection,COUNT(*) FROM records GROUP BY collection')
+  for row in cur.fetchall(): result[rowget(row,'collection',0)]=rowget(row,'count',1)
+ return result

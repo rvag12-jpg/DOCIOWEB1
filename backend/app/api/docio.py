@@ -1,36 +1,31 @@
 from uuid import uuid4
 from typing import Literal
 from datetime import date
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from app import repository as repo
+from app.services.evaluation import Evaluation, assessment_key, compute
 router=APIRouter(prefix='/docio',tags=['docio'])
 def load(): return repo.state()
 def uid(p): return f'{p}-{uuid4().hex[:10]}'
-EVAL_ORDER={'Inicial':0,'1ª':1,'2ª':2,'Ordinaria':3}
 class GroupIn(BaseModel): name:str; course:str=''; subject:str=''
 class StudentIn(BaseModel): student_id:str; group_id:str
 class KnowledgeIn(BaseModel): knowledge_id:str; code:str=''; title:str; course:str=''; subject:str=''
 class CriterionIn(BaseModel): criterion_id:str; code:str=''; title:str; course:str=''; subject:str=''
 class RelationIn(BaseModel): knowledge_id:str; criterion_id:str
 class Question(BaseModel): question_id:str; title:str; max_score:float=Field(gt=0); knowledge_ids:list[str]=[]; criteria:list[str]=[]
+class AssessmentMetadataIn(BaseModel):
+ title:str=Field(min_length=1)
+ evaluation:Evaluation
+ assessment_date:date
 class AssessmentIn(BaseModel): title:str; group_id:str; evaluation:Literal['Inicial','1ª','2ª','Ordinaria']='1ª'; assessment_date:date=Field(default_factory=date.today); assessment_type:Literal['exam','activity','project']='exam'; questions:list[Question]=[]
 class Evidence(BaseModel): criterion_id:str; text:str; score:float|None=None
 class CorrectionIn(BaseModel): assessment_id:str; student_id:str; scores:dict[str,float]={}; evidence:list[Evidence]=[]; validated:bool=False; comment:str=''; overwrite:bool=False
 def assessment(db,aid): return next((x for x in db['assessments'] if x['assessment_id']==aid),None)
-def assessment_key(a): return (str(a.get('assessment_date','0000-00-00')),EVAL_ORDER.get(a.get('evaluation',''),99),a.get('assessment_id',''))
-def compute(a,c):
- qs=a.get('questions',[]); qmap={q['question_id']:q for q in qs}; total_max=sum(float(q['max_score']) for q in qs); total=0.; crit={}
- for qid,raw in (c.get('scores') or {}).items():
-  q=qmap.get(qid)
-  if not q: continue
-  score=max(0.,min(float(raw),float(q['max_score']))); total+=score; ratio=10*score/float(q['max_score'])
-  for cid in q.get('criteria',[]): crit.setdefault(cid,[]).append(ratio)
- return {'final_score':round(10*total/total_max,2) if total_max else 0.,'criterion_scores':{k:round(sum(v)/len(v),2) for k,v in crit.items()},'raw_score':round(total,2),'raw_max':round(total_max,2)}
 @router.get('/state')
 def state(): return load()
 @router.get('/storage')
-def storage(): return {'backend':repo.backend(),'persistent':repo.backend()=='postgresql'}
+def storage(): return {'backend':repo.backend(),'persistent':repo.backend()=='postgresql','record_counts':repo.counts()}
 @router.get('/history')
 def history(limit:int=100): return repo.history(max(1,min(limit,500)))
 @router.post('/groups')
@@ -68,6 +63,12 @@ def add_assessment(item:AssessmentIn):
  if not item.questions: raise HTTPException(422,'La prueba debe contener al menos una cuestión')
  for q in item.questions: validate_question(db,q,3 if item.assessment_type=='project' else 2)
  row={'assessment_id':uid('ASM'),**item.model_dump(mode='json')}; return repo.put('assessments',row,'create')
+@router.patch('/assessments/{assessment_id}')
+def update_assessment_metadata(assessment_id:str,item:AssessmentMetadataIn):
+ a=assessment(load(),assessment_id)
+ if not a: raise HTTPException(404,'Prueba no encontrada')
+ if not item.title.strip(): raise HTTPException(422,'El título no puede estar vacío')
+ return repo.put('assessments',{**a,**item.model_dump(mode='json'),'title':item.title.strip()},'metadata')
 @router.put('/corrections')
 def upsert_correction(item:CorrectionIn):
  db=load(); a=assessment(db,item.assessment_id)
@@ -90,9 +91,9 @@ def analytics(assessment_id:str):
  means={cid:(round(sum(vals)/len(vals),2) if (vals:=[r['criterion_scores'][cid] for r in rows if cid in r['criterion_scores']]) else None) for cid in criteria}
  return {'assessment':a,'students':rows,'criterion_means':means,'group_mean':round(sum(r['final_score'] for r in rows)/len(rows),2) if rows else None}
 @router.get('/recovery/{group_id}/{student_id}')
-def recovery(group_id:str,student_id:str,threshold:float=5.0):
+def recovery(group_id:str,student_id:str,threshold:float=Query(5.0,ge=0,le=10)):
  db=load(); amap={a['assessment_id']:a for a in db['assessments'] if a['group_id']==group_id}; values={}
- rows=[c for c in db['corrections'] if c['student_id']==student_id and c['assessment_id'] in amap]; rows.sort(key=lambda c:assessment_key(amap[c['assessment_id']]))
+ rows=[c for c in db['corrections'] if c['student_id']==student_id and c['assessment_id'] in amap and c.get('validated',False)]; rows.sort(key=lambda c:assessment_key(amap[c['assessment_id']]))
  for c in rows:
   a=amap[c['assessment_id']]
   for cid,score in compute(a,c)['criterion_scores'].items(): values.setdefault(cid,[]).append({'assessment_id':c['assessment_id'],'title':a['title'],'date':a.get('assessment_date'),'evaluation':a.get('evaluation'),'score':score})
@@ -102,15 +103,15 @@ def recovery(group_id:str,student_id:str,threshold:float=5.0):
   result.append({'criterion_id':cid,'latest':latest,'best':best,'status':status,'recovered':recovered,'needs_recovery':latest<threshold,'evidence':items})
  return {'group_id':group_id,'student_id':student_id,'threshold':threshold,'criteria':result,'pending':[x['criterion_id'] for x in result if x['status']=='pending'],'recovered':[x['criterion_id'] for x in result if x['status']=='recovered'],'achieved':[x['criterion_id'] for x in result if x['status']=='achieved']}
 @router.get('/student-profile/{student_id}')
-def student_profile(student_id:str):
+def student_profile(student_id:str,evaluation:Evaluation|None=None):
  db=load(); student=next((x for x in db['students'] if x['student_id']==student_id),None)
  if not student: raise HTTPException(404,'student_id no encontrado')
- amap={a['assessment_id']:a for a in db['assessments'] if a['group_id']==student['group_id']}; attempts=[]; crit={}
- rows=[c for c in db['corrections'] if c['student_id']==student_id and c['assessment_id'] in amap]; rows.sort(key=lambda c:assessment_key(amap[c['assessment_id']]))
+ amap={a['assessment_id']:a for a in db['assessments'] if a['group_id']==student['group_id'] and (not evaluation or a.get('evaluation')==evaluation)}; attempts=[]; crit={}
+ rows=[c for c in db['corrections'] if c['student_id']==student_id and c['assessment_id'] in amap and c.get('validated',False)]; rows.sort(key=lambda c:assessment_key(amap[c['assessment_id']]))
  for c in rows:
   a=amap[c['assessment_id']]; calc=compute(a,c); item={'assessment_id':a['assessment_id'],'title':a['title'],'evaluation':a.get('evaluation'),'date':a.get('assessment_date'),'final_score':calc['final_score'],'validated':c.get('validated',False),'criterion_scores':calc['criterion_scores']}; attempts.append(item)
   for cid,score in calc['criterion_scores'].items(): crit.setdefault(cid,[]).append({'date':a.get('assessment_date'),'evaluation':a.get('evaluation'),'assessment_id':a['assessment_id'],'score':score})
- return {'student':student,'attempts':attempts,'criteria':crit,'mean':round(sum(x['final_score'] for x in attempts)/len(attempts),2) if attempts else None}
+ return {'student':student,'evaluation':evaluation,'attempts':attempts,'criteria':crit,'mean':round(sum(x['final_score'] for x in attempts)/len(attempts),2) if attempts else None}
 @router.post('/import')
 def import_correction(payload:dict):
  if payload.get('format') not in (None,'DOCIO_CORRECTION_V1'): raise HTTPException(422,'Formato no compatible')
@@ -137,3 +138,4 @@ def export(assessment_id:str):
  db=load(); a=assessment(db,assessment_id)
  if not a: raise HTTPException(404,'Prueba no encontrada')
  return {'format':'DOCIO_CORRECTION_V1','assessment_id':assessment_id,'assessment':a,'corrections':[{**x,**compute(a,x)} for x in db['corrections'] if x['assessment_id']==assessment_id]}
+
