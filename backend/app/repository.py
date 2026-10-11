@@ -96,16 +96,32 @@ def _put(connection, collection, key, row, action='upsert'):
     cursor.execute(ph(f'INSERT INTO {audit}(ts,action,collection,record_key,before_data,after_data) VALUES(?,?,?,?,?,?)'), (now(), action, collection, key, before, after))
 
 
-def state():
-    init_db()
+def _state(connection):
     records, _ = tables()
     out = {name: [] for name in COLLECTIONS}
-    with conn() as connection:
-        cursor = connection.cursor()
-        cursor.execute(f'SELECT collection,data FROM {records} ORDER BY collection,record_key')
-        for row in cursor.fetchall():
-            out[rowget(row, 'collection', 0)].append(json.loads(rowget(row, 'data', 1)))
+    cursor = connection.cursor()
+    cursor.execute(f'SELECT collection,data FROM {records} ORDER BY collection,record_key')
+    for row in cursor.fetchall():
+        out[rowget(row, 'collection', 0)].append(json.loads(rowget(row, 'data', 1)))
     return out
+
+
+def state():
+    init_db()
+    with conn() as connection:
+        return _state(connection)
+
+
+def import_corrections(prepare):
+    """Validate, check the preview and write the batch under one write lock."""
+    init_db()
+    with conn() as connection:
+        records, _ = tables()
+        connection.cursor().execute(f'LOCK TABLE {records} IN SHARE ROW EXCLUSIVE MODE' if POSTGRES else 'BEGIN IMMEDIATE')
+        rows, report = prepare(_state(connection))
+        for row in rows:
+            _put(connection, 'corrections', key_for('corrections', row), row, 'import')
+    return {**report, 'imported': len(rows)}
 
 
 def put(collection, row, action='upsert'):

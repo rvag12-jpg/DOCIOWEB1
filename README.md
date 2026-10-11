@@ -63,3 +63,13 @@ La demostración utiliza tablas `demo_records` y `demo_audit`, separadas de las 
 Las pruebas automáticas utilizan exclusivamente fixtures inventadas. GitHub Actions levanta PostgreSQL 18 para comprobar escrituras, historial y aislamiento en esquemas temporales; no conecta a la base de datos de Render.
 
 La demostración publicada sin `DATABASE_URL` utiliza SQLite y puede reiniciar sus ejemplos al redeploy. El soporte PostgreSQL se valida en CI; conectar la base de datos del servicio principal sigue siendo una configuración independiente.
+
+## Intercambio JSON (v0.13)
+
+El módulo **Intercambio JSON** permite abrir un archivo o pegar un `DOCIO_CORRECTION_V1`, revisar las acciones y puntuaciones de cada alumno y guardar el lote. En DEMO incluye un botón para cargar un ejemplo completamente ficticio. También permite descargar todas las correcciones de una prueba, con cuestiones, evidencias y estado de validación.
+
+La vista previa no modifica correcciones. Por defecto se conservan las ya validadas; su sustitución requiere activar la opción correspondiente y revisar de nuevo el lote. Si los registros cambian después de la vista previa, la importación se rechaza hasta revisarlos otra vez. El lote se valida y escribe en una sola transacción, incluido su historial; un error revierte todo el lote tanto en SQLite como en PostgreSQL.
+
+Se comprueban identificadores, pertenencia al grupo, cuestiones y criterios de la prueba, puntuaciones finitas dentro de sus máximos y duplicados de prueba–alumno. Una corrección validada requiere puntuar todas las cuestiones; un borrador puede estar incompleto. Las puntuaciones finales se recalculan desde las cuestiones, sin confiar en una nota final incluida en el JSON. Se admiten los alias `students` y `evidences` del intercambio anterior.
+
+API: `POST /api/v1/docio/import/preview`, `POST /api/v1/docio/import` y `GET /api/v1/docio/export/{assessment_id}`. La interfaz envía `expected_revision` al confirmar para comprobar que la vista previa sigue vigente. Los clientes antiguos pueden seguir importando sin este campo, con la validación y transacción del lote.

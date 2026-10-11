@@ -72,6 +72,23 @@ class PostgresTests(unittest.TestCase):
         self.assertEqual(repo.state()['groups'], [control])
         self.assertEqual(repo.counts()['students'], 0)
 
+    def test_batch_lock_commit_and_rollback_on_postgresql(self):
+        repo.init_db()
+        rows = [{'assessment_id':'TEST-PG-ASSESSMENT','student_id':f'TEST-PG-{i}','scores':{}} for i in (1,2)]
+        original = repo._put
+        def write_and_fail(*args):
+            original(*args)
+            if args[3]['student_id']=='TEST-PG-2':
+                raise RuntimeError('Synthetic PostgreSQL failure')
+        with patch.object(repo,'_put',side_effect=write_and_fail), self.assertRaises(RuntimeError):
+            repo.import_corrections(lambda db:(rows, {}))
+        self.assertEqual(repo.counts()['corrections'],0)
+        self.assertEqual(repo.history(),[])
+        result = repo.import_corrections(lambda db:(rows, {}))
+        self.assertEqual(result['imported'],2)
+        self.assertEqual(repo.counts()['corrections'],2)
+        self.assertEqual(len(repo.history()),2)
+
 
 if __name__ == '__main__':
     unittest.main()
