@@ -12,6 +12,8 @@ Aplicación web de evaluación criterial basada en DOCIO, con React/TypeScript y
 - Estados separados para criterios pendientes, evidencias incompletas y ausencia de evidencias. Los borradores no forman parte del seguimiento validado.
 - Importación/exportación `DOCIO_CORRECTION_V1` y protección de correcciones validadas frente a sustitución sin confirmación.
 - Subida fragmentada de PDF, renderizado de memoria acotada y segmentación por alumno.
+- Imágenes JPEG/PNG/WebP por alumno, corrección mediante Responses API o simulador y carga automática de propuestas en una prueba nueva.
+- Ficha maestra CORRECTOR confirmada, desglose por componentes, revisión de lectura y validación docente.
 
 La media de pruebas que aparece en Seguimiento es descriptiva; no representa una regla de calificación final del curso. La media criterial del grupo compara el último nivel observado de cada alumno dentro del filtro. Los criterios sin evidencia se muestran sin puntuación y no se convierten en ceros.
 
@@ -23,7 +25,10 @@ Primero se identifican los saberes básicos efectivamente evaluados. Los criteri
 
 | Ubicación | Función |
 |---|---|
-| `backend/app/api` | Documentos, evaluación y seguimiento |
+| `backend/app/api` | Documentos, evaluación, seguimiento y lotes IA |
+| `backend/app/services/corrector.py` | Marco CORRECTOR y comprobación de resultados |
+| `backend/app/services/ai_provider.py` | OpenAI Responses API y simulador sin red |
+| `backend/app/services/ai_jobs.py` | Cola y guardado atómico por alumno |
 | `backend/app/services/evaluation.py` | Cálculo común y orden cronológico |
 | `backend/app/repository.py` | PostgreSQL o SQLite; historial de cambios |
 | `backend/tests` | Regresiones con datos sintéticos aislados |
@@ -73,3 +78,42 @@ La vista previa no modifica correcciones. Por defecto se conservan las ya valida
 Se comprueban identificadores, pertenencia al grupo, cuestiones y criterios de la prueba, puntuaciones finitas dentro de sus máximos y duplicados de prueba–alumno. Una corrección validada requiere puntuar todas las cuestiones; un borrador puede estar incompleto. Las puntuaciones finales se recalculan desde las cuestiones, sin confiar en una nota final incluida en el JSON. Se admiten los alias `students` y `evidences` del intercambio anterior.
 
 API: `POST /api/v1/docio/import/preview`, `POST /api/v1/docio/import` y `GET /api/v1/docio/export/{assessment_id}`. La interfaz envía `expected_revision` al confirmar para comprobar que la vista previa sigue vigente. Los clientes antiguos pueden seguir importando sin este campo, con la validación y transacción del lote.
+
+## Corrección de imágenes (v0.14)
+
+El módulo **Corrección IA** implementa el recorrido completo: documentos asignados por `student_id`, ficha maestra, una solicitud por alumno y una prueba nueva con correcciones en borrador. Usa OpenAI Responses API; las solicitudes de API no crean conversaciones en la interfaz de ChatGPT.
+
+1. Seleccionar una prueba como plantilla de cuestiones, saberes, criterios y máximos.
+2. Completar la ficha maestra JSON: materia, curso, duración, solución de referencia, evidencias esperadas, componentes y reglas de crédito parcial. La suma de componentes debe coincidir con el máximo de cada cuestión. Confirmar la ficha y la asignación de páginas.
+3. Añadir hasta 12 imágenes por alumno (JPEG, PNG o WebP, hasta 20 MB cada una), o subir un PDF conjunto y asignar sus páginas a los identificadores registrados. Los archivos se suben fragmentados; las imágenes se orientan y convierten a JPEG sin metadatos, con un máximo de 3000 píxeles por lado.
+4. Crear el lote. Se clona la plantilla en una prueba nueva y se guarda su ficha maestra confirmada. El servidor envía únicamente las páginas del alumno, su identificador y el marco de corrección; no añade otras calificaciones ni su historial.
+5. Revisar las propuestas en **Corrección**: transcripción, páginas, legibilidad, confianza, evidencias, justificaciones y crédito por componente. Editar las puntuaciones y confirmar la revisión docente antes de validar.
+
+El prompt adapta el marco CORRECTOR 2.0.3 y las reglas del corrector personal: cuestiones independientes, matriz saberes–criterios explícita, sin completar pasos ausentes ni descontar dos veces el mismo error. La API devuelve JSON estructurado; el servidor comprueba identidad, cuestiones, componentes, páginas y límites, y calcula la nota. Una lectura ilegible o incompleta requiere revisión y conserva la nota pendiente en vez de convertirla en cero. Evidencias y transcripciones equivalentes con créditos distintos se marcan para contraste, sin promediar las notas. Estas comprobaciones no garantizan la precisión de la lectura o del juicio científico del modelo.
+
+La prueba original se conserva. Cada propuesta y el estado de su alumno se escriben juntos en una transacción; un fallo no deja un resultado cargado sin su registro de progreso. `request_id` evita crear otra prueba al reenviar la misma solicitud. Los errores se muestran por alumno y el reintento manual conserva las correcciones terminadas. Un lote en cola se reactiva al consultarlo tras un reinicio; una ejecución abandonada permite reintentar después de 10 minutos. Se comprueban hashes de las imágenes antes de enviarlas. No hay reintentos automáticos de OpenAI: un fallo de transporte puede haber generado una solicitud facturada.
+
+Las propuestas no cuentan en las medias ni en el seguimiento hasta que se validan. El resultado original de IA se conserva junto a las ediciones docentes, y el historial registra los cambios. La importación JSON mantiene esta revisión; una simulación no puede validar una evaluación en modo ordinario.
+
+### Clave ficticia y activación posterior
+
+La demostración publicada utiliza **`DOCIO_AI_PROVIDER=mock`**, datos y notas completamente ficticios, y no llama a OpenAI. El botón **Cargar lote ficticio de 3 alumnos** prepara imágenes y una ficha inventadas; el simulador asigna un 65 % para comprobar el transporte y no lee el contenido. `.env.example` contiene únicamente marcadores de posición.
+
+Para trabajar más adelante con una clave verdadera, configurar estas variables **en el servidor** (por ejemplo, en Environment del servicio Render):
+
+| Variable | Configuración |
+|---|---|
+| `DOCIO_AI_PROVIDER` | `openai` |
+| `OPENAI_API_KEY` | Clave verdadera con acceso al modelo |
+| `DOCIO_AI_MODEL` | `gpt-6-astra` por defecto; modelo compatible con imágenes y JSON estructurado disponible en la cuenta |
+| `DOCIO_AI_ACCESS_TOKEN` | Código aleatorio privado de al menos 24 caracteres |
+| `DOCIO_AI_MAX_STUDENTS` | `40` por defecto |
+| `DOCIO_AI_MAX_OUTPUT_TOKENS` | `16000` por defecto |
+
+La aplicación no carga `.env.example` automáticamente. En local, exportar las variables en el proceso que inicia Uvicorn. La interfaz solicita únicamente el código de acceso del servicio IA y lo conserva en memoria durante esa sesión. No introducir `OPENAI_API_KEY` en el navegador, en variables `VITE_*` ni en el repositorio. Los valores ficticios de ejemplo no activan OpenAI.
+
+Los endpoints de lotes requieren `Authorization: Bearer <DOCIO_AI_ACCESS_TOKEN>` en modo OpenAI. Este control protege el uso del proveedor; la aplicación sigue necesitando su configuración de autenticación general para un despliegue con usuarios reales.
+
+La llamada usa `store: false`, imágenes base64 y `text.format` con JSON Schema estricto. Referencias: [imágenes y visión](https://developers.openai.com/api/docs/guides/images-vision) y [salidas estructuradas](https://developers.openai.com/api/docs/guides/structured-outputs).
+
+API: `GET /api/v1/ai/config`, `GET /api/v1/ai/framework/{assessment_id}`, `POST /api/v1/ai/jobs`, `GET /api/v1/ai/jobs`, `GET /api/v1/ai/jobs/{job_id}` y `POST /api/v1/ai/jobs/{job_id}/retry`. Las pruebas usan exclusivamente fixtures y respuestas sintéticas; la integración con un modelo real queda pendiente de configurar una clave verdadera. La cola se ejecuta en un hilo del servidor, con progreso persistido en PostgreSQL o SQLite. Los archivos necesitan almacenamiento persistente: los documentos de la demostración gratuita pueden desaparecer al redeploy.

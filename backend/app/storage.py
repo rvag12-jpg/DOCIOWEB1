@@ -20,9 +20,13 @@ class DocumentStore:
     written+=len(chunk)
     if written>limit: raise UploadTooLargeError(f'El PDF supera el límite de {settings.max_upload_mb} MB')
     f.write(chunk)
- def save_manifest(self,doc:DocumentView): (self.document_dir(doc.document_id)/'manifest.json').write_text(json.dumps(doc.model_dump(mode='json'),ensure_ascii=False,indent=2),encoding='utf-8')
+ def save_manifest(self,doc:DocumentView):
+  directory=self.document_dir(doc.document_id); temporary=directory/('manifest-'+uuid4().hex+'.tmp')
+  temporary.write_text(json.dumps(doc.model_dump(mode='json'),ensure_ascii=False,indent=2),encoding='utf-8')
+  temporary.replace(directory/'manifest.json')
  def load_manifest(self,i):
   p=self.document_dir(i)/'manifest.json'
   if not p.exists(): raise FileNotFoundError(i)
   return DocumentView.model_validate_json(p.read_text(encoding='utf-8'))
 store=DocumentStore()
+

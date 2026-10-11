@@ -18,6 +18,7 @@ def compute(assessment, correction):
     total_max = sum(float(q['max_score']) for q in questions)
     total = 0.0
     criteria = {}
+    scored = set()
     for question_id, raw in (correction.get('scores') or {}).items():
         question = question_map.get(question_id)
         if question is None or raw is None or raw == '':
@@ -30,11 +31,12 @@ def compute(assessment, correction):
         if not isfinite(value) or maximum <= 0:
             continue
         score = max(0.0, min(value, maximum))
+        scored.add(question_id)
         total += score
         for criterion_id in question.get('criteria', []):
             criteria.setdefault(criterion_id, []).append(10 * score / maximum)
     return {
-        'final_score': round(10 * total / total_max, 2) if total_max else 0.0,
+        'final_score': None if correction.get('ai_report') and len(scored)!=len(question_map) else (round(10 * total / total_max, 2) if total_max else 0.0),
         'criterion_scores': {cid: round(sum(values) / len(values), 2)
                              for cid, values in criteria.items()},
         'raw_score': round(total, 2),

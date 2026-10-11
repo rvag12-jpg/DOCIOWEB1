@@ -75,7 +75,7 @@ def init_db():
 
 def key_for(collection, row, index=0):
     fields = {'groups': 'group_id', 'students': 'student_id', 'assessments': 'assessment_id',
-              'knowledge': 'knowledge_id', 'criteria': 'criterion_id'}
+              'knowledge': 'knowledge_id', 'criteria': 'criterion_id', 'ai_jobs':'job_id'}
     if collection in fields:
         return str(row.get(fields[collection], index))
     if collection == 'relations':
@@ -100,7 +100,7 @@ def _state(connection):
     records, _ = tables()
     out = {name: [] for name in COLLECTIONS}
     cursor = connection.cursor()
-    cursor.execute(f'SELECT collection,data FROM {records} ORDER BY collection,record_key')
+    cursor.execute(f"SELECT collection,data FROM {records} WHERE collection!='ai_jobs' ORDER BY collection,record_key")
     for row in cursor.fetchall():
         out[rowget(row, 'collection', 0)].append(json.loads(rowget(row, 'data', 1)))
     return out
@@ -112,12 +112,42 @@ def state():
         return _state(connection)
 
 
-def import_corrections(prepare):
-    """Validate, check the preview and write the batch under one write lock."""
+@contextmanager
+def atomic():
+    """Short write transaction; external API calls must stay outside this lock."""
     init_db()
     with conn() as connection:
         records, _ = tables()
         connection.cursor().execute(f'LOCK TABLE {records} IN SHARE ROW EXCLUSIVE MODE' if POSTGRES else 'BEGIN IMMEDIATE')
+        yield connection
+
+
+def _get(connection, collection, key):
+    records,_=tables()
+    cursor=connection.cursor()
+    cursor.execute(ph(f'SELECT data FROM {records} WHERE collection=? AND record_key=?'),(collection,key))
+    row=cursor.fetchone()
+    return json.loads(rowget(row,'data',0)) if row else None
+
+
+def get_record(collection,key):
+    init_db()
+    with conn() as connection:
+        return _get(connection,collection,key)
+
+
+def list_records(collection,limit=50):
+    init_db()
+    records,_=tables()
+    with conn() as connection:
+        cursor=connection.cursor()
+        cursor.execute(ph(f'SELECT data FROM {records} WHERE collection=? ORDER BY updated_at DESC LIMIT ?'),(collection,limit))
+        return [json.loads(rowget(row,'data',0)) for row in cursor.fetchall()]
+
+
+def import_corrections(prepare):
+    """Validate, check the preview and write the batch under one write lock."""
+    with atomic() as connection:
         rows, report = prepare(_state(connection))
         for row in rows:
             _put(connection, 'corrections', key_for('corrections', row), row, 'import')
@@ -167,5 +197,7 @@ def counts():
         cursor = connection.cursor()
         cursor.execute(f'SELECT collection,COUNT(*) FROM {records} GROUP BY collection')
         for row in cursor.fetchall():
-            result[rowget(row, 'collection', 0)] = rowget(row, 'count', 1)
+            collection=rowget(row,'collection',0)
+            if collection in result:
+                result[collection] = rowget(row, 'count', 1)
     return result

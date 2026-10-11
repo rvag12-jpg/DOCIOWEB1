@@ -11,3 +11,16 @@ export async function requestDocio(path:string, options:RequestInit={}):Promise<
   if(payload===null)throw new Error(`Respuesta no válida del servidor (HTTP ${response.status})`);
   return payload;
 }
+
+export async function uploadStudentImages(files:File[],studentId:string):Promise<DocumentView>{
+  if(!files.length||files.length>12)throw new Error('Seleccione entre 1 y 12 imágenes para el alumno');
+  for(const file of files)if(!file.size||file.size>20*1024*1024)throw new Error('Cada imagen debe ocupar entre 1 byte y 20 MB');
+  let document:DocumentView|undefined;
+  for(const file of files){
+    const{upload_id}=await requestDocio('/documents/chunked/init',{method:'POST'});
+    const chunks=Math.ceil(file.size/CHUNK);
+    for(let i=0;i<chunks;i++)await send(`/api/v1/documents/chunked/${upload_id}/part/${i}`,file.slice(i*CHUNK,Math.min((i+1)*CHUNK,file.size)),i,chunks);
+    document=await requestDocio(`/documents/chunked/${upload_id}/image-complete`,{method:'POST',body:JSON.stringify({student_id:studentId,document_id:document?.document_id,filename:file.name,size:file.size,chunks})});
+  }
+  return document!;
+}

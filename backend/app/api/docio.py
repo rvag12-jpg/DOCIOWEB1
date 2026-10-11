@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from app import repository as repo
 from app.services.evaluation import Evaluation, assessment_key, compute
-from app.services.corrections import CorrectionIn, prepare_import, validate_correction
+from app.services.corrections import CorrectionIn, prepare_import, validate_correction,preserve_ai_review
 router=APIRouter(prefix='/docio',tags=['docio'])
 def load(): return repo.state()
 def uid(p): return f'{p}-{uuid4().hex[:10]}'
@@ -70,9 +70,10 @@ def update_assessment_metadata(assessment_id:str,item:AssessmentMetadataIn):
  return repo.put('assessments',{**a,**item.model_dump(mode='json'),'title':item.title.strip()},'metadata')
 @router.put('/corrections')
 def upsert_correction(item:CorrectionIn):
- db=load(); data, _, _=validate_correction(item,db)
+ db=load(); data, a, _=validate_correction(item,db)
  existing=next((x for x in db['corrections'] if x['assessment_id']==item.assessment_id and x['student_id']==item.student_id),None)
  if existing and existing.get('validated') and not item.overwrite: raise HTTPException(409,'La corrección ya está validada. Confirme overwrite=true para sustituirla')
+ data=preserve_ai_review(item,existing,data,a)
  return repo.put('corrections',data,'correction')
 @router.delete('/corrections/{assessment_id}/{student_id}')
 def delete_correction(assessment_id:str,student_id:str):
@@ -82,7 +83,7 @@ def delete_correction(assessment_id:str,student_id:str):
 def analytics(assessment_id:str):
  db=load(); a=assessment(db,assessment_id)
  if not a: raise HTTPException(404,'Prueba no encontrada')
- rows=[{**c,**compute(a,c)} for c in db['corrections'] if c['assessment_id']==assessment_id]; criteria=sorted({cid for q in a.get('questions',[]) for cid in q.get('criteria',[])})
+ rows=[{**c,**compute(a,c)} for c in db['corrections'] if c['assessment_id']==assessment_id and c.get('validated',False)]; criteria=sorted({cid for q in a.get('questions',[]) for cid in q.get('criteria',[])})
  means={cid:(round(sum(vals)/len(vals),2) if (vals:=[r['criterion_scores'][cid] for r in rows if cid in r['criterion_scores']]) else None) for cid in criteria}
  return {'assessment':a,'students':rows,'criterion_means':means,'group_mean':round(sum(r['final_score'] for r in rows)/len(rows),2) if rows else None}
 @router.get('/recovery/{group_id}/{student_id}')

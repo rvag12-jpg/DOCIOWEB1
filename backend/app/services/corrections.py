@@ -25,6 +25,7 @@ class CorrectionIn(BaseModel):
     validated: StrictBool = False
     comment: StrictStr = ''
     overwrite: StrictBool = False
+    teacher_review_confirmed: StrictBool = False
 
 
 def validate_correction(item, db):
@@ -53,9 +54,25 @@ def validate_correction(item, db):
         if evidence.criterion_id in seen:
             raise HTTPException(422, f'{item.student_id}: evidencia duplicada para {evidence.criterion_id}')
         seen.add(evidence.criterion_id)
-    data = item.model_dump(exclude={'overwrite'})
+    data = item.model_dump(exclude={'overwrite','teacher_review_confirmed'})
     data.update(compute(assessment, data))
     return data, assessment, student
+
+
+def preserve_ai_review(item,existing,row,assessment):
+    if not existing or not existing.get('ai_report'):
+        return row
+    from app import repository as repo
+    report=existing['ai_report']
+    if item.validated:
+        if not item.teacher_review_confirmed:
+            raise HTTPException(422,'Confirme la revisión docente de la propuesta IA antes de validarla')
+        if report.get('simulated') and not repo.DEMO_MODE:
+            raise HTTPException(422,'Una simulación no puede validar una evaluación ordinaria')
+    row['ai_report']={**report,'teacher_validated':item.validated,
+                      'status':'CLOSED' if item.validated else ('REVIEW_REQUIRED' if report['review_reasons'] else 'CORRECTED')}
+    row.update(compute(assessment,row))
+    return row
 
 
 def prepare_import(payload, db):
@@ -88,9 +105,11 @@ def prepare_import(payload, db):
         seen.add(key)
         row, assessment, student = validate_correction(item, db)
         existing = existing_map.get(key)
-        revision.append({'row': row, 'before': existing, 'assessment': assessment, 'student': student})
         protected = bool(existing and existing.get('validated'))
         action = 'skipped' if protected and not overwrite else ('replace_validated' if protected else ('update' if existing else 'create'))
+        if action!='skipped':
+            row=preserve_ai_review(item,existing,row,assessment)
+        revision.append({'row': row, 'before': existing, 'assessment': assessment, 'student': student})
         changes.append({'assessment_id': item.assessment_id, 'student_id': item.student_id,
                         'title': assessment['title'], 'action': action, 'validated': item.validated,
                         'final_score': row['final_score'], 'previous_score': existing.get('final_score') if existing else None})

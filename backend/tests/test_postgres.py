@@ -89,6 +89,33 @@ class PostgresTests(unittest.TestCase):
         self.assertEqual(repo.counts()['corrections'],2)
         self.assertEqual(len(repo.history()),2)
 
+    def test_ai_job_checkpoints_and_drafts_survive_connections(self):
+        from app.api.ai import demo_images
+        from app.storage import store
+        from app.services import ai_jobs,ai_provider
+        from app.services.corrector import framework_template
+        root=Path(self.temp.name)/'synthetic-images';root.mkdir()
+        with patch.object(repo,'DEMO_MODE',True),patch.object(store,'root',root),patch.dict(os.environ,{'DOCIO_AI_PROVIDER':'mock'}):
+            document=demo_images()
+            source=repo.get_record('assessments','DEMO-FOLLOWUP')
+            group=repo.get_record('groups','DEMO-GROUP')
+            payload=ai_jobs.JobIn.model_validate({
+                'request_id':'synthetic-pg-ai-001','source_assessment_id':source['assessment_id'],
+                'title':'Prueba PG ficticia','evaluation':'1ª','assessment_date':'2026-10-11',
+                'framework':framework_template(source,group,True),'framework_confirmed':True,
+                'assignments':[{'student_id':f'DEMO-{n:03d}','document_id':document.document_id} for n in (1,2,3)]})
+            job=ai_jobs.create_job(payload)
+            with patch.object(ai_provider.httpx,'Client',side_effect=AssertionError('Synthetic PG job cannot call OpenAI')):
+                ai_jobs.run_job(job['job_id'])
+            saved=repo.get_record('ai_jobs',job['job_id'])
+            self.assertEqual(saved['status'],'completed')
+            self.assertEqual(ai_jobs.summary(saved)['completed'],3)
+            self.assertEqual(len(repo.list_records('ai_jobs')),1)
+            self.assertNotIn('ai_jobs',repo.state())
+            drafts=[r for r in repo.state()['corrections'] if r['assessment_id']==job['assessment_id']]
+            self.assertEqual(len(drafts),3)
+            self.assertTrue(all(not r['validated'] and r['final_score']==6.5 and r['ai_report']['simulated'] for r in drafts))
+
 
 if __name__ == '__main__':
     unittest.main()
