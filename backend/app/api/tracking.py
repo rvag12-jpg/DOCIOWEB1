@@ -1,44 +1,83 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from app import repository as repo
+from app.services.evaluation import Evaluation, assessment_key, compute
 
-router=APIRouter(prefix='/docio',tags=['docio-tracking'])
-EVAL_ORDER={'Inicial':0,'1ª':1,'2ª':2,'Ordinaria':3}
+router = APIRouter(prefix='/docio', tags=['docio-tracking'])
 
-def compute(a,c):
-    qs=a.get('questions',[]); qmap={q['question_id']:q for q in qs}; total_max=sum(float(q['max_score']) for q in qs); total=0.; crit={}
-    for qid,raw in (c.get('scores') or {}).items():
-        q=qmap.get(qid)
-        if not q: continue
-        score=max(0.,min(float(raw),float(q['max_score']))); total+=score; ratio=10*score/float(q['max_score'])
-        for cid in q.get('criteria',[]): crit.setdefault(cid,[]).append(ratio)
-    return {'final_score':round(10*total/total_max,2) if total_max else 0.,'criterion_scores':{k:round(sum(v)/len(v),2) for k,v in crit.items()}}
-
-def akey(a): return (str(a.get('assessment_date','0000-00-00')),EVAL_ORDER.get(a.get('evaluation',''),99),a.get('assessment_id',''))
 
 @router.get('/tracking')
-def tracking(group_id:str|None=None,evaluation:str|None=None):
-    db=repo.state(); assessments=db['assessments']
-    if group_id: assessments=[a for a in assessments if a.get('group_id')==group_id]
-    if evaluation: assessments=[a for a in assessments if a.get('evaluation')==evaluation]
-    amap={a['assessment_id']:a for a in assessments}; rows=[]
-    for c in db['corrections']:
-        a=amap.get(c.get('assessment_id'))
-        if not a: continue
-        calc=compute(a,c); rows.append({'student_id':c['student_id'],'assessment_id':a['assessment_id'],'title':a['title'],'group_id':a['group_id'],'evaluation':a.get('evaluation'),'date':a.get('assessment_date'),'validated':c.get('validated',False),'final_score':calc['final_score'],'criterion_scores':calc['criterion_scores']})
-    rows.sort(key=lambda x:(x['student_id'],x.get('date') or '',EVAL_ORDER.get(x.get('evaluation',''),99)))
-    return {'group_id':group_id,'evaluation':evaluation,'rows':rows,'count':len(rows)}
+def tracking(group_id: str | None = None, evaluation: Evaluation | None = None):
+    db = repo.state()
+    assessments = [a for a in db['assessments']
+                   if (not group_id or a.get('group_id') == group_id)
+                   and (not evaluation or a.get('evaluation') == evaluation)]
+    assessments.sort(key=assessment_key)
+    order = {a['assessment_id']: i for i, a in enumerate(assessments)}
+    amap = {a['assessment_id']: a for a in assessments}
+    rows = []
+    for correction in db['corrections']:
+        assessment = amap.get(correction.get('assessment_id'))
+        if assessment is None:
+            continue
+        calc = compute(assessment, correction)
+        rows.append({
+            'student_id': correction['student_id'],
+            'assessment_id': assessment['assessment_id'],
+            'title': assessment['title'], 'group_id': assessment['group_id'],
+            'evaluation': assessment.get('evaluation'),
+            'date': assessment.get('assessment_date'),
+            'validated': correction.get('validated', False),
+            'final_score': calc['final_score'],
+            'criterion_scores': calc['criterion_scores'],
+        })
+    rows.sort(key=lambda row: (row['student_id'], order[row['assessment_id']]))
+    return {'group_id': group_id, 'evaluation': evaluation, 'rows': rows, 'count': len(rows)}
+
 
 @router.get('/group-overview/{group_id}')
-def group_overview(group_id:str,evaluation:str|None=None,threshold:float=5.0):
-    db=repo.state()
-    if not any(g['group_id']==group_id for g in db['groups']): raise HTTPException(404,'Grupo no encontrado')
-    assessments=[a for a in db['assessments'] if a.get('group_id')==group_id and (not evaluation or a.get('evaluation')==evaluation)]; assessments.sort(key=akey); amap={a['assessment_id']:a for a in assessments}; students=[s for s in db['students'] if s.get('group_id')==group_id]; result=[]
-    for s in students:
-        corrections=[c for c in db['corrections'] if c.get('student_id')==s['student_id'] and c.get('assessment_id') in amap]; corrections.sort(key=lambda c:akey(amap[c['assessment_id']]))
-        criterion_values={}; finals=[]
-        for c in corrections:
-            calc=compute(amap[c['assessment_id']],c); finals.append(calc['final_score'])
-            for cid,score in calc['criterion_scores'].items(): criterion_values.setdefault(cid,[]).append(score)
-        latest={cid:vals[-1] for cid,vals in criterion_values.items()}; pending=[cid for cid,v in latest.items() if v<threshold]
-        result.append({'student_id':s['student_id'],'mean':round(sum(finals)/len(finals),2) if finals else None,'assessments':len(corrections),'latest_criteria':latest,'pending_criteria':pending})
-    return {'group_id':group_id,'evaluation':evaluation,'threshold':threshold,'students':result,'assessments':[{'assessment_id':a['assessment_id'],'title':a['title'],'evaluation':a.get('evaluation'),'date':a.get('assessment_date')} for a in assessments]}
+def group_overview(group_id: str, evaluation: Evaluation | None = None,
+                   threshold: float = Query(5.0, ge=0, le=10)):
+    db = repo.state()
+    if not any(g['group_id'] == group_id for g in db['groups']):
+        raise HTTPException(404, 'Grupo no encontrado')
+    assessments = [a for a in db['assessments'] if a.get('group_id') == group_id
+                   and (not evaluation or a.get('evaluation') == evaluation)]
+    assessments.sort(key=assessment_key)
+    amap = {a['assessment_id']: a for a in assessments}
+    expected = sorted({cid for a in assessments for q in a.get('questions', [])
+                       for cid in q.get('criteria', [])})
+    result = []
+    for student in (s for s in db['students'] if s.get('group_id') == group_id):
+        corrections = [c for c in db['corrections']
+                       if c.get('student_id') == student['student_id']
+                       and c.get('assessment_id') in amap]
+        drafts = sum(not c.get('validated', False) for c in corrections)
+        corrections = [c for c in corrections if c.get('validated', False)]
+        corrections.sort(key=lambda c: assessment_key(amap[c['assessment_id']]))
+        latest, finals = {}, []
+        for correction in corrections:
+            calc = compute(amap[correction['assessment_id']], correction)
+            finals.append(calc['final_score'])
+            latest.update(calc['criterion_scores'])
+        pending = sorted(cid for cid, value in latest.items() if value < threshold)
+        missing = sorted(set(expected) - latest.keys())
+        status = ('no_evidence' if not latest else 'pending' if pending
+                  else 'partial' if missing else 'achieved')
+        result.append({
+            'student_id': student['student_id'],
+            'mean': round(sum(finals) / len(finals), 2) if finals else None,
+            'assessments': len(corrections), 'drafts': drafts,
+            'latest_criteria': latest, 'pending_criteria': pending,
+            'missing_criteria': missing, 'status': status,
+        })
+    means = {}
+    for cid in expected:
+        values = [s['latest_criteria'][cid] for s in result if cid in s['latest_criteria']]
+        means[cid] = round(sum(values) / len(values), 2) if values else None
+    return {
+        'group_id': group_id, 'evaluation': evaluation, 'threshold': threshold,
+        'students': result, 'expected_criteria': expected, 'criterion_means': means,
+        'assessments': [{'assessment_id': a['assessment_id'], 'title': a['title'],
+                         'evaluation': a.get('evaluation'), 'date': a.get('assessment_date')}
+                        for a in assessments],
+    }

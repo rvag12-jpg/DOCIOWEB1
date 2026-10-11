@@ -7,6 +7,20 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: docioweb1_test
+          POSTGRES_USER: docio_test
+          POSTGRES_PASSWORD: synthetic_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docio_test -d docioweb1_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -14,6 +28,12 @@ jobs:
           python-version: '3.12'
       - name: Validate Python syntax
         run: python -m compileall -q backend/app
+      - name: Install backend test dependencies
+        run: pip install -r backend/requirements-dev.txt
+      - name: Test synthetic data, tracking and PostgreSQL isolation
+        env:
+          DOCIO_TEST_POSTGRES_URL: postgresql://docio_test:synthetic_test_password@localhost:5432/docioweb1_test
+        run: PYTHONPATH=backend python -m unittest discover -s backend/tests -v
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -21,9 +41,10 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install frontend
         working-directory: frontend
-        run: npm install
+        run: npm ci
       - name: Build frontend
         working-directory: frontend
         run: npm run build
       - name: Build Docker image
         run: docker build -f backend/Dockerfile -t docioweb1-ci .
+
