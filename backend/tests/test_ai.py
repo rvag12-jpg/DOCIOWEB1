@@ -63,6 +63,9 @@ class AITests(unittest.TestCase):
         rows=self.corrections(job)
         self.assertEqual(len(rows),3)
         self.assertTrue(all(r['final_score']==6.5 and not r['validated'] and r['ai_report']['simulated'] for r in rows))
+        for row in rows:
+            page=int(row['student_id'][-1])
+            self.assertEqual(row['ai_report']['source_pages'],[{'page_number':page,'image_url':f'/media/{self.document["document_id"]}/pages/page-{page:04d}.jpg'}])
         self.assertEqual([c for c in repo.state()['corrections'] if c['assessment_id']!=job['assessment_id']],before)
         self.assertEqual(self.client.get('/api/v1/docio/analytics/'+job['assessment_id']).json()['students'],[])
         self.assertNotIn('ai_jobs',self.client.get('/api/v1/docio/state').json())

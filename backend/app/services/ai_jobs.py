@@ -208,7 +208,8 @@ def run_job(job_id):
                 images=verified_images(student)
                 result,metadata=ai_provider.correct(sid,assessment,framework,images,job['provider'])
                 row=correction_from_result(result,sid,assessment,framework,[p for p,_ in images],repo.state(),
-                                           {**metadata,'job_id':job_id,'processed_at':repo.now(),'document_id':student['document_id']})
+                                           {**metadata,'job_id':job_id,'processed_at':repo.now(),'document_id':student['document_id'],
+                                            'source_pages':[{'page_number':p,'image_url':f'/media/{student["document_id"]}/pages/{path.name}'} for p,path in images]})
                 status='review_required' if row['ai_report']['review_reasons'] else 'completed'
                 mark_student(job_id,run_id,sid,{'status':status,'final_score':row['final_score'],
                                                'review_reasons':row['ai_report']['review_reasons'],'error':None},row)

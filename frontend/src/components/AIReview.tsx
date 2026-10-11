@@ -3,6 +3,7 @@ export function AIReview({report}:{report:any}){
   return <section className="ai-review">
     <h4>{report.simulated?'SIMULACIÓN · puntuaciones ficticias':'Propuesta de CORRECTOR mediante IA'}</h4>
     <p>{report.teacher_validated?'Revisada y validada por el docente.':'Borrador pendiente de revisión docente.'} · {report.model}</p>
+    {report.source_pages?.length>0&&<details><summary>Ver imágenes de origen · {report.source_pages.length} páginas</summary><div className="ai-source-pages">{report.source_pages.map((page:any)=><a key={page.page_number} href={page.image_url} target="_blank" rel="noreferrer"><img src={page.image_url} loading="lazy" alt={'Prueba del alumno · página '+page.page_number}/><span>Abrir página {page.page_number}</span></a>)}</div></details>}
     {report.review_reasons?.length>0&&<div className="error"><b>Incidencias de la propuesta</b><ul>{report.review_reasons.map((reason:string,i:number)=><li key={i}>{reason}</li>)}</ul></div>}
     {report.result.items.map((item:any)=><details key={item.question_id}><summary>{item.question_id} · {item.legibility} · confianza declarada {Math.round(item.confidence*100)} %</summary>
       <h5>Transcripción de la respuesta</h5><p className="ai-transcription">{item.transcription}</p>
