@@ -30,6 +30,8 @@ def compute(a,c):
  return {'final_score':round(10*total/total_max,2) if total_max else 0.,'criterion_scores':{k:round(sum(v)/len(v),2) for k,v in crit.items()},'raw_score':round(total,2),'raw_max':round(total_max,2)}
 @router.get('/state')
 def state(): return load()
+@router.get('/storage')
+def storage(): return {'backend':repo.backend(),'persistent':repo.backend()=='postgresql'}
 @router.get('/history')
 def history(limit:int=100): return repo.history(max(1,min(limit,500)))
 @router.post('/groups')
@@ -85,6 +87,16 @@ def analytics(assessment_id:str):
  rows=[{**c,**compute(a,c)} for c in db['corrections'] if c['assessment_id']==assessment_id]; criteria=sorted({cid for q in a.get('questions',[]) for cid in q.get('criteria',[])})
  means={cid:(round(sum(vals)/len(vals),2) if (vals:=[r['criterion_scores'][cid] for r in rows if cid in r['criterion_scores']]) else None) for cid in criteria}
  return {'assessment':a,'students':rows,'criterion_means':means,'group_mean':round(sum(r['final_score'] for r in rows)/len(rows),2) if rows else None}
+@router.get('/recovery/{group_id}/{student_id}')
+def recovery(group_id:str,student_id:str,threshold:float=5.0):
+ db=load(); aids={a['assessment_id']:a for a in db['assessments'] if a['group_id']==group_id}; values={}
+ for c in db['corrections']:
+  if c['student_id']!=student_id or c['assessment_id'] not in aids: continue
+  for cid,score in compute(aids[c['assessment_id']],c)['criterion_scores'].items(): values.setdefault(cid,[]).append({'assessment_id':c['assessment_id'],'score':score})
+ result=[]
+ for cid,items in values.items():
+  latest=items[-1]['score']; best=max(x['score'] for x in items); result.append({'criterion_id':cid,'latest':latest,'best':best,'recovered':latest>=threshold,'needs_recovery':latest<threshold,'evidence':items})
+ return {'group_id':group_id,'student_id':student_id,'threshold':threshold,'criteria':result}
 @router.post('/import')
 def import_correction(payload:dict):
  if payload.get('format') not in (None,'DOCIO_CORRECTION_V1'): raise HTTPException(422,'Formato no compatible')
